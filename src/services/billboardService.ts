@@ -99,7 +99,7 @@ async function readExcelFromUrl(url: string, timeoutMs = 10000, retries = 2) {
 
       if (res.status === 307 || res.status === 308) {
         const location = res.headers.get("location")
-        console.log(`[Service] ��م توجيه الطلب إلى: ${location}`)
+        console.log(`[Service] تم توجيه الطلب إلى: ${location}`)
         if (location) {
           return await readExcelFromUrl(location, timeoutMs, retries)
         }
@@ -107,7 +107,7 @@ async function readExcelFromUrl(url: string, timeoutMs = 10000, retries = 2) {
 
       if (!res.ok) {
         if (res.status === 403) {
-          throw new Error(`ا��ملف غير متاح ��لوصول العام. تأك�� من أن الملف مشارك ل��عامة. كود الخطأ: ${res.status}`)
+          throw new Error(`الملف غير متاح للوصول العام. تأكد من أن الملف مشارك للعامة. كود الخطأ: ${res.status}`)
         } else if (res.status === 404) {
           throw new Error(`الملف غير موجود. تأكد من صحة رابط Google Sheets. كود الخطأ: ${res.status}`)
         } else if (res.status === 429) {
@@ -130,7 +130,7 @@ async function readExcelFromUrl(url: string, timeoutMs = 10000, retries = 2) {
 
       if (!isExcel && !isOldExcel) {
         console.log(
-          `[Service] تحذير: الملف المحمل قد لا يكون ملف إكسل صحيح. الباي��ات الأولى: ${Array.from(uint8Array.slice(0, 10))
+          `[Service] تحذير: الملف المحمل قد لا يكون ملف إكسل صحيح. البايتات الأولى: ${Array.from(uint8Array.slice(0, 10))
             .map((b) => b.toString(16))
             .join(" ")}`,
         )
@@ -138,7 +138,7 @@ async function readExcelFromUrl(url: string, timeoutMs = 10000, retries = 2) {
 
       return buffer
     } catch (error: any) {
-      console.warn(`[Service] فشلت المحاولة ${attempt}:`, error.message)
+      console.warn(`[Service] فشلت المحا��لة ${attempt}:`, error.message)
 
       if (attempt === retries) {
         throw error
@@ -153,10 +153,12 @@ async function readExcelFromUrl(url: string, timeoutMs = 10000, retries = 2) {
 
 function safeReadExcel(fileBuffer: ArrayBuffer) {
   const readOptions = [
+    { type: "array" as const, cellDates: true, codepage: 65001, dateNF: "yyyy-mm-dd" },
+    { type: "array" as const, cellDates: true, codepage: 1256, dateNF: "yyyy-mm-dd" },
+    { type: "array" as const, cellDates: true, raw: false },
     { type: "array" as const, codepage: 65001 },
     { type: "array" as const, codepage: 1256 },
     { type: "array" as const, raw: true },
-    { type: "array" as const, cellDates: true, dateNF: "yyyy-mm-dd" },
     { type: "array" as const, bookVBA: false, bookSheets: true },
   ]
 
@@ -173,6 +175,149 @@ function safeReadExcel(fileBuffer: ArrayBuffer) {
   }
 
   throw new Error("فشل في قراءة ملف الإكسل بجميع الخيارات المتاحة")
+}
+
+// دالة لتحويل التاريخ من Excel إلى تاريخ JavaScript صحيح
+function parseExcelDate(dateValue: any): Date | null {
+  if (!dateValue) return null
+  
+  // إذا كان التاريخ بالفعل كائن Date
+  if (dateValue instanceof Date) {
+    return isNaN(dateValue.getTime()) ? null : dateValue
+  }
+  
+  // إذا كان رقم (Excel serial date)
+  if (typeof dateValue === 'number') {
+    try {
+      // استخدام XLSX لتحويل الرقم التسلسلي إلى تاريخ
+      const excelDate = XLSX.SSF.parse_date_code(dateValue)
+      if (excelDate) {
+        return new Date(excelDate.y, excelDate.m - 1, excelDate.d)
+      }
+    } catch (error) {
+      console.warn("[Service] فشل في تحويل الرقم التسلسلي للتاريخ:", dateValue, error)
+    }
+  }
+  
+  // إذا كان نص
+  if (typeof dateValue === 'string') {
+    const dateStr = dateValue.trim()
+    if (!dateStr) return null
+    
+    // محاولة تحويل النص إلى تاريخ
+    const formats = [
+      // صيغ التاريخ المختلفة
+      /^\d{4}-\d{2}-\d{2}$/, // 2024-12-31
+      /^\d{2}\/\d{2}\/\d{4}$/, // 31/12/2024
+      /^\d{1,2}\/\d{1,2}\/\d{4}$/, // 1/1/2024
+      /^\d{4}\/\d{2}\/\d{2}$/, // 2024/12/31
+    ]
+    
+    for (const format of formats) {
+      if (format.test(dateStr)) {
+        const date = new Date(dateStr)
+        if (!isNaN(date.getTime())) {
+          return date
+        }
+      }
+    }
+    
+    // محاولة أخيرة مع Date constructor
+    const date = new Date(dateStr)
+    if (!isNaN(date.getTime())) {
+      return date
+    }
+  }
+  
+  console.warn("[Service] لا يمكن تحويل القيمة إلى تاريخ:", dateValue, typeof dateValue)
+  return null
+}
+
+// دالة لمعالجة بيانات اللوحة الواحدة
+function processBillboardData(billboard: any, index: number): Billboard {
+  const id = billboard['ر.م'] || billboard['رقم اللوحة'] || `BILLBOARD-${index + 1}`
+  const name = billboard['اسم لوحة'] || billboard['اسم اللوحة'] || `لوحة-${index + 1}`
+  const location = billboard['اقرب نقطة دالة'] || billboard['أقرب نقطة دالة'] || 'موقع غير محدد'
+  const municipality = billboard['البلدية'] || 'غير محدد'
+  const city = billboard['مدينة'] || billboard['المدينة'] || 'غير محدد'
+  const area = billboard['منطقة'] || billboard['المنطقة'] || municipality
+  const size = billboard['حجم'] || billboard['الحجم'] || billboard['المقاس مع الدغاية'] || '12X4'
+  const coordinates = billboard['احداثي - GPS'] || billboard['الإحداثيات GPS'] || '32.8872,13.1913'
+
+  // بيانات العميل - استخدام أسماء الأعمدة الصحيحة
+  const contractNumber = (billboard['رقم العقد'] || '').toString()
+  const clientName = (billboard['اسم الزبون'] || billboard['اسم العميل'] || billboard['العميل'] || '').toString()
+  const advertisementType = (billboard['نوع الاعلان'] || '').toString()
+
+  let imageUrl = billboard['image_url'] || billboard['@IMAGE'] || '/roadside-billboard.png'
+  if (imageUrl.includes('drive.google.com')) {
+    const fileId = imageUrl.match(/id=([a-zA-Z0-9_-]+)/)?.[1] || 
+                   imageUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/)?.[1]
+    if (fileId) {
+      imageUrl = `https://drive.google.com/uc?export=view&id=${fileId}`
+    }
+  }
+
+  const expiryDateValue = billboard['تاريخ انتهاء الايجار'] || billboard['تاريخ الانتهاء'] || billboard['تاريخ انتهاء العقد'] || null
+  let status = billboard['الحالة'] || 'متاح'
+  let expiryDate = null
+
+  // تحديد الحالة بناءً على وجود عقد
+  if (contractNumber && contractNumber.trim() !== '' && contractNumber !== '#N/A') {
+    status = 'محجوز'
+
+    // إذا كان هناك تاريخ انتهاء، تحقق من اقرب من الانتهاء
+    if (expiryDateValue) {
+      expiryDate = parseExcelDate(expiryDateValue)
+      if (expiryDate) {
+        const today = new Date()
+        today.setHours(0, 0, 0, 0) // تصفير الوقت للمقارنة بالتاريخ فقط
+        expiryDate.setHours(0, 0, 0, 0)
+        
+        const diffTime = expiryDate.getTime() - today.getTime()
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+
+        console.log(`[Service] Billboard ${id}: expiry value ${expiryDateValue}, parsed date: ${expiryDate.toISOString().split('T')[0]}, days remaining: ${diffDays}`)
+
+        if (diffDays <= 30 && diffDays > 0) {
+          status = "قريباً"
+        } else if (diffDays <= 0) {
+          // إذا انتهت المدة، تصبح اللوحة متاحة
+          status = "متاح"
+        }
+      } else {
+        console.warn(`[Service] فشل في تحويل تاريخ الانتهاء للوحة ${id}: ${expiryDateValue}`)
+      }
+    }
+  } else {
+    // لوحة متاحة
+    status = 'متاح'
+  }
+  
+  const coords = coordinates.toString().split(',').map((c: string) => c.trim())
+  const gpsLink = coords.length >= 2 
+    ? `https://www.google.com/maps?q=${coords[0]},${coords[1]}`
+    : 'https://www.google.com/maps?q=32.8872,13.1913'
+  
+  return {
+    id: id.toString(),
+    name: name.toString(),
+    location: location.toString(),
+    municipality: municipality.toString(),
+    city: city.toString(),
+    area: area.toString(),
+    size: size.toString(),
+    level: billboard['مستوى'] || 'A',
+    status: status.toString(),
+    expiryDate: expiryDate ? expiryDate.toISOString().split('T')[0] : null,
+    coordinates: coordinates.toString(),
+    imageUrl,
+    gpsLink,
+    // بيانات العميل
+    contractNumber: contractNumber,
+    clientName: clientName,
+    advertisementType: advertisementType,
+  }
 }
 
 export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
@@ -208,12 +353,12 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
 
       for (const url of alternativeUrls) {
         try {
-          console.log(`[Service] محاولة قراءة ملف الإكس�� من الرابط: ${url}`)
+          console.log(`[Service] محاولة قراءة ملف الإكسل من الرابط: ${url}`)
           fileBuffer = await readExcelFromUrl(url, 15000, 2)
           console.log("[Service] تم تحميل ملف الإكسل من الرابط بنجاح ✅")
           break
         } catch (err: any) {
-          console.warn(`[Service] فشل قراءة الملف من الراب�� ${url}:`, err.message)
+          console.warn(`[Service] فشل قراءة الملف من الرابط ${url}:`, err.message)
           lastError = err
           continue
         }
@@ -225,7 +370,7 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
           const response = await fetch('/billboards.xlsx')
           
           if (!response.ok) {
-            throw new Error('فشل في تحميل ملف Excel ا��محلي')
+            throw new Error('فشل في تحميل ملف Excel المحلي')
           }
           
           fileBuffer = await response.arrayBuffer()
@@ -253,7 +398,7 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
 
     const worksheet = workbook.Sheets[sheetName]
     if (!worksheet) {
-      throw new Error("لا يمكن قراءة الورقة الأولى من م��ف الإكسل")
+      throw new Error("لا يمكن قراءة الورقة الأولى من ملف الإكسل")
     }
 
     const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" })
@@ -263,87 +408,10 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
 
     console.log("[Service] أعمدة الملف المتاحة:", Object.keys(jsonData[0] || {}))
 
-    // عرض جميع اللوحات (ال��تاحة والمحجوزة)
-    const billboards = jsonData
-      .map((billboard: any, index: number) => {
-        const id = billboard['ر.م'] || billboard['رقم اللوحة'] || `BILLBOARD-${index + 1}`
-        const name = billboard['اسم لوحة'] || billboard['اسم اللوحة'] || `لوحة-${index + 1}`
-        const location = billboard['اقرب نقطة دالة'] || billboard['أقرب نقطة دالة'] || 'موقع غير محدد'
-        const municipality = billboard['البلدية'] || '��ير محدد'
-        const city = billboard['مدينة'] || billboard['المدينة'] || 'غير محدد'
-        const area = billboard['منطقة'] || billboard['المنطقة'] || municipality
-        const size = billboard['حجم'] || billboard['الحجم'] || billboard['المقاس مع الدغاية'] || '12X4'
-        const coordinates = billboard['احداثي - GPS'] || billboard['الإحداثيات GPS'] || '32.8872,13.1913'
-
-        // بيانات ال��ميل - استخدام أسماء الأعمدة الصحيحة
-        const contractNumber = (billboard['رقم العقد'] || '').toString()
-        const clientName = (billboard['اسم الزبون'] || billboard['اسم العميل'] || billboard['العميل'] || '').toString()
-        const advertisementType = (billboard['نوع الاعلان'] || '').toString()
-
-        let imageUrl = billboard['image_url'] || billboard['@IMAGE'] || '/roadside-billboard.png'
-        if (imageUrl.includes('drive.google.com')) {
-          const fileId = imageUrl.match(/id=([a-zA-Z0-9_-]+)/)?.[1] || 
-                         imageUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/)?.[1]
-          if (fileId) {
-            imageUrl = `https://drive.google.com/uc?export=view&id=${fileId}`
-          }
-        }
-
-        const expiryDateStr = (billboard['تاريخ انتهاء الايجار'] || billboard['تاريخ الانتهاء'] || billboard['تاريخ انتهاء العقد'] || '').toString()
-        let status = billboard['الحالة'] || 'متاح'
-        let expiryDate = null
-
-        // تح��يد الحالة بناءً على وجود عقد
-        if (contractNumber && contractNumber.trim() !== '' && contractNumber !== '#N/A') {
-          status = 'محجو��'
-
-          // إذا كان هناك تاريخ انتهاء، تحقق من ا���قرب من الانتهاء
-          if (expiryDateStr && expiryDateStr.trim() !== '') {
-            expiryDate = new Date(expiryDateStr)
-            if (!isNaN(expiryDate.getTime())) {
-              const today = new Date()
-              const diffTime = expiryDate.getTime() - today.getTime()
-              const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
-
-              console.log(`[Service] Billboard ${id}: expiry ${expiryDateStr}, days remaining: ${diffDays}`)
-
-              if (diffDays <= 30 && diffDays > 0) {
-                status = "قريباً"
-              } else if (diffDays <= 0) {
-                status = "متاح"
-              }
-            }
-          }
-        } else {
-          // لوحة متاحة
-          status = 'متاح'
-        }
-        
-        const coords = coordinates.toString().split(',').map((c: string) => c.trim())
-        const gpsLink = coords.length >= 2 
-          ? `https://www.google.com/maps?q=${coords[0]},${coords[1]}`
-          : 'https://www.google.com/maps?q=32.8872,13.1913'
-        
-        return {
-          id: id.toString(),
-          name: name.toString(),
-          location: location.toString(),
-          municipality: municipality.toString(),
-          city: city.toString(),
-          area: area.toString(),
-          size: size.toString(),
-          level: billboard['مستوى'] || 'A',
-          status: status.toString(),
-          expiryDate: expiryDate ? expiryDate.toISOString().split('T')[0] : null,
-          coordinates: coordinates.toString(),
-          imageUrl,
-          gpsLink,
-          // بيانات العميل
-          contractNumber: contractNumber,
-          clientName: clientName,
-          advertisementType: advertisementType,
-        }
-      })
+    // عرض جميع اللوحات (المتاحة والمحجوزة)
+    const billboards = jsonData.map((billboard: any, index: number) => 
+      processBillboardData(billboard, index)
+    )
 
     console.log('[Service] تم تحميل', billboards.length, 'لوحة من Google Sheets')
     return billboards
@@ -360,7 +428,7 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
       }
       
       const buffer = await response.arrayBuffer()
-      const workbook = XLSX.read(buffer, { type: 'array' })
+      const workbook = XLSX.read(buffer, { type: 'array', cellDates: true })
       
       const sheetName = workbook.SheetNames[0]
       if (!sheetName) {
@@ -375,92 +443,14 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
       }
       
       // معالجة البيانات المحلية بنفس الطريقة - عرض جميع اللوحات
-      const billboards = jsonData
-        .map((billboard: any, index: number) => {
-          const id = billboard['ر.م'] || `BILLBOARD-${index + 1}`
-          const name = billboard['اسم لوحة'] || `لوحة-${index + 1}`
-          const location = billboard['اقرب نقطة دالة'] || '��وقع غير محدد'
-          const municipality = billboard['البلدية'] || 'غير محدد'
-          const city = billboard['مدينة'] || 'غير محدد'
-          const area = billboard['منطقة'] || municipality
-          const size = billboard['حجم'] || '12X4'
-          const coordinates = billboard['احداثي - GPS'] || '32.8872,13.1913'
-
-          // بيانات العميل - استخدام أسماء الأعمدة الصحيحة
-          const contractNumber = (billboard['رقم العقد'] || '').toString()
-          const clientName = (billboard['اسم الزبون'] || billboard['اسم العميل'] || billboard['العميل'] || '').toString()
-          const advertisementType = (billboard['نوع الاعلان'] || '').toString()
-
-          let imageUrl = billboard['image_url'] || '/roadside-billboard.png'
-          if (imageUrl.includes('drive.google.com')) {
-            const fileId = imageUrl.match(/id=([a-zA-Z0-9_-]+)/)?.[1] || 
-                           imageUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/)?.[1]
-            if (fileId) {
-              imageUrl = `https://drive.google.com/uc?export=view&id=${fileId}`
-            }
-          }
-          
-          const coords = coordinates.toString().split(',').map((c: string) => c.trim())
-          const gpsLink = coords.length >= 2 
-            ? `https://www.google.com/maps?q=${coords[0]},${coords[1]}`
-            : 'https://www.google.com/maps?q=32.8872,13.1913'
-          
-          // تحديد الحالة بناءً على وجود عقد وتاريخ الانتهاء
-          let status = 'متاح'
-          let expiryDate = null
-
-          if (contractNumber && contractNumber.trim() !== '' && contractNumber !== '#N/A') {
-            status = 'محجوز'
-
-            // فحص تاريخ الانتهاء إذا كان موجوداً
-            const expiryDateStr = (billboard['تاريخ انتهاء الايجار'] || billboard['تاريخ الانتهاء'] || billboard['تاريخ انتهاء العقد'] || '').toString()
-            if (expiryDateStr && expiryDateStr.trim() !== '') {
-              try {
-                expiryDate = new Date(expiryDateStr)
-                if (!isNaN(expiryDate.getTime())) {
-                  const today = new Date()
-                  const diffTime = expiryDate.getTime() - today.getTime()
-                  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
-
-                  console.log(`[Service] Local Billboard ${id}: expiry ${expiryDateStr}, days remaining: ${diffDays}`)
-
-                  if (diffDays <= 30 && diffDays > 0) {
-                    status = "قريباً"
-                  } else if (diffDays <= 0) {
-                    status = "متاح"
-                  }
-                }
-              } catch (error) {
-                console.warn(`[Service] Error parsing expiry date: ${expiryDateStr}`, error)
-              }
-            }
-          }
-
-          return {
-            id: id.toString(),
-            name: name.toString(),
-            location: location.toString(),
-            municipality: municipality.toString(),
-            city: city.toString(),
-            area: area.toString(),
-            size: size.toString(),
-            level: billboard['مستوى'] || 'A',
-            status: status,
-            expiryDate: expiryDate ? expiryDate.toISOString().split('T')[0] : null,
-            coordinates: coordinates.toString(),
-            imageUrl,
-            gpsLink,
-            // بيانات العميل
-            contractNumber: contractNumber,
-            clientName: clientName,
-            advertisementType: advertisementType,
-          }
-        })
+      const billboards = jsonData.map((billboard: any, index: number) => 
+        processBillboardData(billboard, index)
+      )
 
       console.log('[Service] تم تحميل', billboards.length, 'لوحة من الملف المحلي')
       return billboards
     } catch (localError) {
-      console.error('[Service] فشل في تحميل الملف المحلي ��يضاً:', localError)
+      console.error('[Service] فشل في تحميل الملف المحلي أيضاً:', localError)
       
       // بيانات احتياطية
       const today = new Date()
@@ -481,7 +471,7 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
           area: "الخمس",
           size: "12X4",
           level: "B",
-          status: "قري��اً",
+          status: "قريباً",
           expiryDate: in5Days.toISOString().split('T')[0],
           coordinates: "32.639466,14.265113",
           imageUrl: "https://lh3.googleusercontent.com/d/1IXWjRnWIqrRnsCIR1UEdsrWqqNeDW8eL",
@@ -493,7 +483,7 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
         {
           id: "943",
           name: "TR-TG0943",
-          location: "امام كلية الهندسة العس��رية باتجاه الشرق",
+          location: "امام كلية الهندسة العسكرية باتجاه الشرق",
           municipality: "تاجوراء",
           city: "طرابلس",
           area: "طرابلس",
@@ -505,13 +495,13 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
           imageUrl: "https://lh3.googleusercontent.com/d/1y3u807ziWfFgaYpsUlA3Rufmu7vyzY7u",
           gpsLink: "https://www.google.com/maps?q=32.77941062678118,13.202820303855821",
           contractNumber: "CT-2024-002",
-          clientName: "مؤسسة النور ل��إعلان",
+          clientName: "مؤسسة النور للإعلان",
           advertisementType: "خدمي",
         },
         {
           id: "134",
           name: "KH-SK0134",
-          location: "بجوار كوبري سوق الخ��يس باتجاه الشرق",
+          location: "بجوار كوبري سوق الخميس باتجاه الشرق",
           municipality: "الخمس",
           city: "الخمس",
           area: "الخمس",
@@ -535,7 +525,7 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
           area: "طرابلس",
           size: "12x4",
           level: "A",
-          status: "محج��ز",
+          status: "محجوز",
           expiryDate: in15Days.toISOString().split('T')[0],
           coordinates: "32.838179,13.071658",
           imageUrl: "/roadside-billboard.png",
@@ -547,7 +537,7 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
         {
           id: "130",
           name: "KH-SK0130",
-          location: "بجوار جسر سوق ��لخميس باتجاه الغرب",
+          location: "بجوار جسر سوق الخميس باتجاه الغرب",
           municipality: "الخمس",
           city: "الخمس",
           area: "الخمس",
@@ -566,7 +556,7 @@ export async function loadBillboardsFromExcel(): Promise<Billboard[]> {
           id: "140",
           name: "ZL-ZL0140",
           location: "مدخل المدينة الغربي بجوار كمرة كعام باتجاه الشرق",
-          municipality: "زلي�������",
+          municipality: "زليتن",
           city: "زليتن",
           area: "زليتن",
           size: "12X4",

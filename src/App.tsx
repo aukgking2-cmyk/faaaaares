@@ -76,19 +76,7 @@ export default function App() {
     }
 
     if (selectedAvailability !== "all") {
-      const isAvailable = selectedAvailability === "available" || selectedAvailability === "متاحة"
-      const isSoon = selectedAvailability === "soon" || selectedAvailability === "متاحة قريباً"
-      const isReserved = selectedAvailability === "محجوز"
-      filtered = filtered.filter((billboard) => {
-        if (isAvailable) {
-          return billboard.status === "متاح"
-        } else if (isSoon) {
-          return billboard.status === "قريباً"
-        } else if (isReserved) {
-          return billboard.status === "محجوز"
-        }
-        return true
-      })
+      filtered = filtered.filter((billboard) => billboard.status === selectedAvailability)
     }
 
     if (!showAllBillboards) {
